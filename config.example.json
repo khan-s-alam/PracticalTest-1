@@ -1,7 +1,10 @@
 {
   "groups": [
     {
-      "inviteCode": "YOUR_GROUP_INVITE_CODE",
+      "inviteCodes": [
+        "GROUP_INVITE_CODE_1",
+        "GROUP_INVITE_CODE_2"
+      ],
       "sources": [
         {
           "type": "url",
@@ -14,7 +17,9 @@
       ]
     },
     {
-      "inviteCode": "ANOTHER_GROUP_INVITE_CODE",
+      "inviteCodes": [
+        "ANOTHER_GROUP_INVITE_CODE"
+      ],
       "sources": [
         {
           "type": "file",

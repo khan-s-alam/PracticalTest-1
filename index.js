@@ -26,16 +26,24 @@ async function loadConfig() {
     }
 
     const inviteCodes = new Set();
-    const groups = config.groups.map((group, index) => {
-        if (!group || typeof group !== 'object' || Array.isArray(group) ||
-            typeof group.inviteCode !== 'string' || !group.inviteCode.trim()) {
-            throw new Error(`Group #${index + 1} in ${CONFIG_FILE} must have an "inviteCode"`);
+    const groups = [];
+    config.groups.forEach((group, index) => {
+        if (!group || typeof group !== 'object' || Array.isArray(group)) {
+            throw new Error(`Group #${index + 1} in ${CONFIG_FILE} must be an object`);
         }
-        const inviteCode = group.inviteCode.trim();
-        if (inviteCodes.has(inviteCode)) {
-            throw new Error(`Duplicate invite code in ${CONFIG_FILE}: ${inviteCode}`);
+        const codes = Array.isArray(group.inviteCodes)
+            ? group.inviteCodes
+            : [group.inviteCode];
+        if (codes.length === 0 || codes.some(code => typeof code !== 'string' || !code.trim())) {
+            throw new Error(`Group #${index + 1} in ${CONFIG_FILE} must have a non-empty "inviteCodes" array or an "inviteCode"`);
         }
-        inviteCodes.add(inviteCode);
+        const normalizedCodes = codes.map(code => code.trim());
+        for (const inviteCode of normalizedCodes) {
+            if (inviteCodes.has(inviteCode)) {
+                throw new Error(`Duplicate invite code in ${CONFIG_FILE}: ${inviteCode}`);
+            }
+            inviteCodes.add(inviteCode);
+        }
 
         if (!Array.isArray(group.sources) || group.sources.length === 0) {
             throw new Error(`Group #${index + 1} in ${CONFIG_FILE} must have a non-empty "sources" array`);
@@ -52,7 +60,9 @@ async function loadConfig() {
             }
             throw new Error(`Source #${sourceIndex + 1} for group #${index + 1} must have type "url" with a valid URL or type "file" with a path`);
         });
-        return { inviteCode, sources };
+        for (const inviteCode of normalizedCodes) {
+            groups.push({ inviteCode, sources });
+        }
     });
 
     return { groups };

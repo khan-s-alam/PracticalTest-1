@@ -32,9 +32,8 @@ async function loadConfig() {
     const appConfig = await readJsonFile(APP_CONFIG_FILE);
     const forwardConfig = await readJsonFile(FORWARD_CONFIG_FILE);
 
-    if (!Array.isArray(appConfig.groups) || appConfig.groups.length === 0 ||
-        appConfig.groups.some(group => typeof group?.inviteCode !== 'string' || !group.inviteCode.trim())) {
-        throw new Error(`${APP_CONFIG_FILE} must contain groups with inviteCode values`);
+    if (!Array.isArray(appConfig.groups) || appConfig.groups.length === 0) {
+        throw new Error(`${APP_CONFIG_FILE} must contain a non-empty "groups" array`);
     }
     if (typeof forwardConfig.channelInviteLink !== 'string' ||
         !URL.canParse(forwardConfig.channelInviteLink) ||
@@ -46,8 +45,29 @@ async function loadConfig() {
         throw new Error(`${FORWARD_CONFIG_FILE} batchDelayMs must be a non-negative integer`);
     }
 
+    const inviteCodes = new Set();
+    const groups = appConfig.groups.flatMap((group, index) => {
+        if (!group || typeof group !== 'object' || Array.isArray(group)) {
+            throw new Error(`Group #${index + 1} in ${APP_CONFIG_FILE} must be an object`);
+        }
+        const codes = Array.isArray(group.inviteCodes)
+            ? group.inviteCodes
+            : [group.inviteCode];
+        if (codes.length === 0 || codes.some(code => typeof code !== 'string' || !code.trim())) {
+            throw new Error(`Group #${index + 1} in ${APP_CONFIG_FILE} must have a non-empty "inviteCodes" array or an "inviteCode"`);
+        }
+        return codes.map(code => {
+            const inviteCode = code.trim();
+            if (inviteCodes.has(inviteCode)) {
+                throw new Error(`Duplicate invite code in ${APP_CONFIG_FILE}: ${inviteCode}`);
+            }
+            inviteCodes.add(inviteCode);
+            return { inviteCode };
+        });
+    });
+
     return {
-        groups: appConfig.groups.map(group => ({ inviteCode: group.inviteCode.trim() })),
+        groups,
         channelInviteLink: forwardConfig.channelInviteLink,
         batchDelayMs
     };
