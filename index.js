@@ -118,7 +118,8 @@ async function startBot() {
     
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false
+        printQRInTerminal: false,
+        generateHighQualityLinkPreview: true
     });
 
     sock.ev.on('creds.update', saveCreds);
