@@ -1,20 +1,90 @@
 const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
+const fs = require('fs/promises');
+const path = require('path');
 
-// URLs where your website generates the plain text updates
-const CATEGORY_URLS = [
-    "https://jobs.e-next.in/public/meta_info/utxt.php?category=Development",
-    "https://jobs.e-next.in/public/meta_info/utxt.php?category=IT+%26+Software"
-];
+const CONFIG_FILE = path.join(__dirname, 'config.json');
+const GROUP_JID_MAP_FILE = path.join(__dirname, 'group-jid-map.json');
 
+async function loadConfig() {
+    let contents;
+    try {
+        contents = await fs.readFile(CONFIG_FILE, 'utf8');
+    } catch (err) {
+        if (err.code === 'ENOENT') {
+            throw new Error(`Configuration file not found: ${CONFIG_FILE}. Copy config.example.json to config.json and edit it.`);
+        }
+        throw err;
+    }
 
-// Add all your 30 WhatsApp group invite codes here
-const GROUP_INVITE_CODES = [
-    "FbuCm7KFKG3DiY12kQ7p4p",
-    // "CODE_2",
-    // "CODE_3",
-    // ... up to 30 codes
-];
+    const config = JSON.parse(contents);
+    if (!config || Array.isArray(config) || typeof config !== 'object') {
+        throw new Error(`${CONFIG_FILE} must contain a JSON object`);
+    }
+    if (!Array.isArray(config.groups) || config.groups.length === 0) {
+        throw new Error(`${CONFIG_FILE} must contain a non-empty "groups" array`);
+    }
+
+    const inviteCodes = new Set();
+    const groups = config.groups.map((group, index) => {
+        if (!group || typeof group !== 'object' || Array.isArray(group) ||
+            typeof group.inviteCode !== 'string' || !group.inviteCode.trim()) {
+            throw new Error(`Group #${index + 1} in ${CONFIG_FILE} must have an "inviteCode"`);
+        }
+        const inviteCode = group.inviteCode.trim();
+        if (inviteCodes.has(inviteCode)) {
+            throw new Error(`Duplicate invite code in ${CONFIG_FILE}: ${inviteCode}`);
+        }
+        inviteCodes.add(inviteCode);
+
+        if (!Array.isArray(group.sources) || group.sources.length === 0) {
+            throw new Error(`Group #${index + 1} in ${CONFIG_FILE} must have a non-empty "sources" array`);
+        }
+        const sources = group.sources.map((source, sourceIndex) => {
+            if (!source || typeof source !== 'object' || Array.isArray(source)) {
+                throw new Error(`Source #${sourceIndex + 1} for group #${index + 1} must be an object`);
+            }
+            if (source.type === 'url' && typeof source.url === 'string' && URL.canParse(source.url)) {
+                return { type: 'url', url: source.url };
+            }
+            if (source.type === 'file' && typeof source.path === 'string' && source.path.trim()) {
+                return { type: 'file', path: path.resolve(__dirname, source.path) };
+            }
+            throw new Error(`Source #${sourceIndex + 1} for group #${index + 1} must have type "url" with a valid URL or type "file" with a path`);
+        });
+        return { inviteCode, sources };
+    });
+
+    return { groups };
+}
+
+async function loadGroupJidMap() {
+    let contents;
+    try {
+        contents = await fs.readFile(GROUP_JID_MAP_FILE, 'utf8');
+    } catch (err) {
+        if (err.code !== 'ENOENT') {
+            throw err;
+        }
+        await fs.writeFile(GROUP_JID_MAP_FILE, '{}\n', 'utf8');
+        return {};
+    }
+
+    const groupJidMap = JSON.parse(contents);
+    if (!groupJidMap || Array.isArray(groupJidMap) || typeof groupJidMap !== 'object') {
+        throw new Error(`${GROUP_JID_MAP_FILE} must contain a JSON object mapping invite codes to group JIDs`);
+    }
+    for (const [code, jid] of Object.entries(groupJidMap)) {
+        if (typeof jid !== 'string' || !jid.endsWith('@g.us')) {
+            throw new Error(`Invalid group JID for invite code "${code}" in ${GROUP_JID_MAP_FILE}`);
+        }
+    }
+    return groupJidMap;
+}
+
+async function saveGroupJidMap(groupJidMap) {
+    await fs.writeFile(GROUP_JID_MAP_FILE, `${JSON.stringify(groupJidMap, null, 2)}\n`, 'utf8');
+}
 
 // Helper function to fetch clean text messages from your URLs
 function extractWhatsAppMessage(html) {
@@ -78,42 +148,36 @@ function extractWhatsAppMessage(html) {
     return formattedLines.join('\n');
 }
 
-async function fetchMessages() {
+async function fetchMessages(sources) {
     const messages = [];
-    for (const url of CATEGORY_URLS) {
+    for (const source of sources) {
         try {
-            console.log(`Fetching latest content from: ${url}`);
-            const response = await fetch(url);
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status} ${response.statusText}`);
+            if (source.type === 'file') {
+                console.log(`Reading message from file: ${source.path}`);
+                const text = (await fs.readFile(source.path, 'utf8')).trim();
+                if (!text) {
+                    throw new Error('Message file is empty');
+                }
+                messages.push(text);
+            } else {
+                console.log(`Fetching latest content from: ${source.url}`);
+                const response = await fetch(source.url);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status} ${response.statusText}`);
+                }
+                messages.push(extractWhatsAppMessage(await response.text()));
             }
-            const text = extractWhatsAppMessage(await response.text());
-            messages.push(text);
         } catch (err) {
-            console.error(`Failed to fetch text from ${url}:`, err.message);
+            const sourceName = source.type === 'file' ? source.path : source.url;
+            console.error(`Failed to load message from ${sourceName}:`, err.message);
         }
     }
     return messages;
 }
 
-
-async function main() {
-    const MESSAGES = await fetchMessages();
-
-    console.log("MESSAGES:", MESSAGES);
-
-    if (MESSAGES.length === 0) {
-        console.log("No messages found. Stopping execution.");
-        return;
-    }
-
-    // Continue your existing code here
-}
-
-
-// process.exit(0); // Success
-
 async function startBot() {
+    const config = await loadConfig();
+    const groupJidMap = await loadGroupJidMap();
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
     const sock = makeWASocket({
@@ -121,6 +185,8 @@ async function startBot() {
         printQRInTerminal: false,
         generateHighQualityLinkPreview: true
     });
+    let broadcastStarted = false;
+    let stopping = false;
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -132,6 +198,9 @@ async function startBot() {
         }
         
         if (connection === 'close') {
+            if (stopping) {
+                return;
+            }
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             console.log(`Connection closed (error ${statusCode}). Reconnecting...`);
             if (statusCode !== DisconnectReason.loggedOut) {
@@ -139,39 +208,49 @@ async function startBot() {
             }
         } 
         else if (connection === 'open') {
+            if (broadcastStarted) {
+                return;
+            }
+            broadcastStarted = true;
             console.log('\n========================================');
             console.log('Successfully connected to WhatsApp!');
             console.log('========================================\n');
             
-            // 1. Fetch latest messages live from your website
-            const MESSAGES = await fetchMessages();
-            if (MESSAGES.length === 0) {
-                console.log("❌ No messages fetched. Exiting.");
-                return;
-            }
-
-            // 2. Loop through all your 30 groups and post updates sequentially
-            for (let i = 0; i < GROUP_INVITE_CODES.length; i++) {
-                const code = GROUP_INVITE_CODES[i];
+            for (let i = 0; i < config.groups.length; i++) {
+                const { inviteCode: code, sources } = config.groups[i];
                 try {
-                    console.log(`\n[Group ${i + 1}/${GROUP_INVITE_CODES.length}] Fetching JID for code: ${code}...`);
-                    const groupInfo = await sock.groupGetInviteInfo(code);
-                    console.log(`Target: ${groupInfo.subject} (${groupInfo.id})`);
+                    const messages = await fetchMessages(sources);
+                    if (messages.length === 0) {
+                        console.error(`No messages loaded for group #${i + 1}; skipping.`);
+                        continue;
+                    }
+
+                    let groupJid = groupJidMap[code];
+                    if (groupJid) {
+                        console.log(`\n[Group ${i + 1}/${config.groups.length}] Using cached JID: ${groupJid}`);
+                    } else {
+                        console.log(`\n[Group ${i + 1}/${config.groups.length}] Resolving JID for invite code: ${code}...`);
+                        const groupInfo = await sock.groupGetInviteInfo(code);
+                        groupJid = groupInfo.id;
+                        groupJidMap[code] = groupJid;
+                        await saveGroupJidMap(groupJidMap);
+                        console.log(`Target: ${groupInfo.subject} (${groupJid}); saved to JID map.`);
+                    }
 
                     // Post each category block sequentially
-                    for (let mIndex = 0; mIndex < MESSAGES.length; mIndex++) {
+                    for (let mIndex = 0; mIndex < messages.length; mIndex++) {
                         console.log(` -> Sending Category Update #${mIndex + 1}...`);
-                        await sock.sendMessage(groupInfo.id, { text: MESSAGES[mIndex] });
+                        await sock.sendMessage(groupJid, { text: messages[mIndex] });
                         
                         // Short 4-second delay between message blocks in the same group
-                        if (mIndex < MESSAGES.length - 1) {
+                        if (mIndex < messages.length - 1) {
                             await new Promise(res => setTimeout(res, 4000));
                         }
                     }
-                    console.log(`✔ Completed posting to group: ${groupInfo.subject}`);
+                    console.log(`✔ Completed posting to group: ${groupJid}`);
 
                     // Anti-spam safety throttle: 20 to 45 second random delay between groups
-                    if (i < GROUP_INVITE_CODES.length - 1) {
+                    if (i < config.groups.length - 1) {
                         const delay = Math.floor(Math.random() * 25000) + 20000;
                         console.log(`⏳ Sleeping ${delay / 1000}s to maintain safe posting rate...`);
                         await new Promise(res => setTimeout(res, delay));
@@ -183,8 +262,11 @@ async function startBot() {
             }
 
             console.log('\n========================================');
-            console.log('All automated broadcasts delivered across groups!');
+            console.log('All configured groups have been processed.');
             console.log('========================================\n');
+            stopping = true;
+            await sock.end(undefined);
+            console.log('WhatsApp connection closed. The process will now exit.');
         }
     });
 }

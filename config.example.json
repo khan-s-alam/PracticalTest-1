@@ -1,0 +1,26 @@
+{
+  "groups": [
+    {
+      "inviteCode": "YOUR_GROUP_INVITE_CODE",
+      "sources": [
+        {
+          "type": "url",
+          "url": "https://jobs.e-next.in/public/meta_info/utxt.php?category=Development"
+        },
+        {
+          "type": "url",
+          "url": "https://jobs.e-next.in/public/meta_info/utxt.php?category=IT+%26+Software"
+        }
+      ]
+    },
+    {
+      "inviteCode": "ANOTHER_GROUP_INVITE_CODE",
+      "sources": [
+        {
+          "type": "file",
+          "path": "messages/yrkl.txt"
+        }
+      ]
+    }
+  ]
+}
