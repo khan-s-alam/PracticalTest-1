@@ -2,6 +2,7 @@ node_modules/
 auth_info/
 group-jid-map.json
 config.json
+forward-config.json
 
 .env
 .env.*
