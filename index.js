@@ -1,7 +1,11 @@
 const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs/promises');
 const path = require('path');
+
+// Silent logger to suppress noisy Baileys internal logs
+const logger = pino({ level: 'silent' });
 
 const CONFIG_FILE = path.join(__dirname, 'config.json');
 const GROUP_JID_MAP_FILE = path.join(__dirname, 'group-jid-map.json');
@@ -185,6 +189,25 @@ async function fetchMessages(sources) {
     return messages;
 }
 
+async function sendMessageWithRetry(sock, jid, content, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const result = await sock.sendMessage(jid, content);
+            if (result?.status === 1 || result?.key?.id) {
+                return result;
+            }
+            console.warn(`⚠️ sendMessage returned unexpected result (attempt ${attempt}):`, JSON.stringify(result));
+        } catch (err) {
+            console.error(`❌ sendMessage failed (attempt ${attempt}/${maxRetries}):`, err.message);
+            if (attempt === maxRetries) throw err;
+        }
+        // Wait before retry with exponential backoff
+        const backoff = 2000 * attempt;
+        console.log(`⏳ Retrying in ${backoff / 1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, backoff));
+    }
+}
+
 async function startBot() {
     const config = await loadConfig();
     const groupJidMap = await loadGroupJidMap();
@@ -192,6 +215,7 @@ async function startBot() {
     
     const sock = makeWASocket({
         auth: state,
+        logger,
         printQRInTerminal: false,
         generateHighQualityLinkPreview: true
     });
@@ -247,10 +271,11 @@ async function startBot() {
                         console.log(`Target: ${groupInfo.subject} (${groupJid}); saved to JID map.`);
                     }
 
-                    // Post each category block sequentially
+                    // Post each category/source message sequentially
                     for (let mIndex = 0; mIndex < messages.length; mIndex++) {
-                        console.log(` -> Sending Category Update #${mIndex + 1}...`);
-                        await sock.sendMessage(groupJid, { text: messages[mIndex] });
+                        let finalizedMessage = applySpintax(messages[mIndex]);
+                        console.log(` -> Sending message #${mIndex + 1}/${messages.length}...`);
+                        await sock.sendMessage(groupJid, { text: finalizedMessage });
                         
                         // Short 4-second delay between message blocks in the same group
                         if (mIndex < messages.length - 1) {
@@ -281,5 +306,21 @@ async function startBot() {
     });
 }
 
-startBot();
+// Simple internal helper utility to process structural phrase alterations {A|B}
+function applySpintax(text) {
+    // FIX: Use separate regex instances for test and replace to avoid
+    // the stateful lastIndex bug with the /g flag
+    const hasSpintax = /\{([^{}]+)\}/.test(text);
+    if (!hasSpintax) {
+        const randomSuffixes = [' ', ' .', '..', ' ✔️', ' 🙌'];
+        return text + randomSuffixes[Math.floor(Math.random() * randomSuffixes.length)];
+    }
+    return text.replace(/\{([^{}]+)\}/g, (match, options) => {
+        const choices = options.split('|');
+        return choices[Math.floor(Math.random() * choices.length)];
+    });
+}
+
+// Run bot framework initialization
+startBot().catch(console.error);
 //main().catch(console.error);
